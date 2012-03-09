@@ -17,7 +17,7 @@
 #include <cutil_math.h>
 #include <stdio.h>
 
-#define PIXEL	186
+//#define PIXEL	16*16-1
 
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 200)
 #define printf(f, ...) ((void) (f, __VA_ARGS__), 0)
@@ -160,7 +160,9 @@ d_eliminate_crosses( uint *id, uint *od, int w, int h )
 	od[center] = 0;
 	if ((row<h-1) && (column<w-1))
 	{
-		od[center] = id[center]&0x08 | id[center]&0x20 | id[center+w+1]&0x02 | id[center+w+1]&0x80;
+			od[center] = (id[center]&0x08)>>3 | (((id[center+w+1]&0x02)>>1)<<1) | (((id[center+w+1]&0x80)>>7)<<2) | (((id[center]&0x20)>>5)<<3);
+		//if ( center < 6 )
+		//	printf("center %d od %u\n", center, od[center]);
 
 		if ((id[center]&0x10 && id[center+1]&0x40))
 		{
@@ -168,6 +170,8 @@ d_eliminate_crosses( uint *id, uint *od, int w, int h )
 			if (id[center]&0x28 && id[center+1]&0xA0)
 			{
 				//eliminate cross (no cross needs to be added)
+				od[center] = ((id[center]>>8)&0xFFFFFF)<<8 | od[center];
+				//printf("center %d od %u \n", center, od[center]&0xFF);
 				return;
 			}
 
@@ -386,6 +390,9 @@ d_eliminate_crosses( uint *id, uint *od, int w, int h )
 			{
 				//add left diagonal
 				od[center] |= 0x10;
+				od[center] = ((id[center]>>8)&0xFFFFFF)<<8 | od[center];
+				//if (center == 4)
+				//	printf("%d %u \n", center, od[center]&0xFF);
 				return;
 			}
 			else
@@ -394,18 +401,29 @@ d_eliminate_crosses( uint *id, uint *od, int w, int h )
 				{
 					//add right diagonal
 					od[center] |= 0x20;
+					od[center] = ((id[center]>>8)&0xFFFFFF)<<8 | od[center];
+					//if (center == 4)
+					//	printf("%d %u \n", center, od[center]&0xFF);
 					return;
 				}
 			}
 		}
-		od[center] = od[center] | id[center]&0x10 | id[center+1]&0x40;
+		od[center] = od[center] | (((id[center]&0x10)>>4)<<4) | (((id[center+1]&0x40)>>6)<<5);
 	}
-	//if ( center > 0 )
-	//	printf("%d %u \n", center, od[center]);
+	od[center] = ((id[center]>>8)&0xFFFFFF)<<8 | od[center];
+	//if (center == 4)
+	//	printf("%d %u \n", center, od[center]&0xFF);
 }
 
+//TODO: Pass Three, Voronoi Graph Generation
+__global__ void
+d_voronoi_generation(uint *id, uint *od, int w, int h)
+{
+	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
+	od[center] = (id[center]&0xFFFFFF00)>>8;
+}
 
-//TODO: Pass Three, Voronoi Graph
+//All three passes finished the reshaping of the original pixel art.
 
 //TODO: Pass Four, Curve Extraction
 
@@ -451,8 +469,10 @@ double connectivityDetection(uint *d_temp, unsigned int *d_dest, int width, int 
 	cutilSafeCall(cutilDeviceSynchronize());
 	shrDeltaT(0);
 
+	//ping-pong data while doing processing works
 	d_check_connect<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest, width, height);
 	d_eliminate_crosses<<<height*width/nthreads, nthreads, 0>>>(d_dest, d_temp, width, height);
+	d_voronoi_generation<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest, width, height);
 
 	// sync host and stop computation timer
 	cutilSafeCall( cutilDeviceSynchronize() );
