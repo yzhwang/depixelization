@@ -47,12 +47,16 @@
 
 
 const char *image_filename = "lenaRGB.ppm";
+const char *vector_filename = "lenaRGB1.ppm";
 int iterations = 0;
 int filter_radius = 2;
 int nthreads = 16;
 
+
 unsigned int width, height;
+unsigned int scale = 4;
 unsigned int * h_img = NULL;
+unsigned int * h_result = NULL;
 unsigned int * d_img = NULL;
 unsigned int * d_temp = NULL;
 
@@ -60,6 +64,10 @@ GLuint pbo;     // OpenGL pixel buffer object
 struct cudaGraphicsResource *cuda_pbo_resource; // handles OpenGL-CUDA exchange
 GLuint texid;   // texture
 GLuint shader;
+
+GLuint pboresult; // Output result
+struct cudaGraphicsResource *cuda_pboresult_resource;
+GLuint texidresult;
 
 unsigned int timer = 0;
 
@@ -79,10 +87,10 @@ extern "C" void loadImageData(int argc, char **argv);
 
 
 // These are CUDA functions to handle allocation and launching the kernels
-extern "C" void initTexture(int width, int height, void *pImage);
+extern "C" void initTexture(int width, int height, void *pImage, void *pResult);
 extern "C" void freeTextures();
 
-extern "C" double connectivityDetection(uint *d_temp, unsigned int *d_dest, int width, int height, int nthreads);
+extern "C" double connectivityDetection(uint *d_temp, unsigned int *d_dest, unsigned int *d_dest2, int width, int height, int scale, int nthreads);
 
 
 // display results using OpenGL
@@ -92,14 +100,20 @@ void display()
 
     // execute filter, writing results to pbo
     unsigned int *d_result;
+	unsigned int *d_pboresult;
     //DEPRECATED: cutilSafeCall( cudaGLMapBufferObject((void**)&d_result, pbo) );
     cutilSafeCall(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
+	cutilSafeCall(cudaGraphicsMapResources(1, &cuda_pboresult_resource, 0));
     size_t num_bytes; 
+	size_t num_bytes_result;
     cutilSafeCall(cudaGraphicsResourceGetMappedPointer((void **)&d_result, &num_bytes,  
 						       cuda_pbo_resource));
-	connectivityDetection(d_temp, d_result, width, height, nthreads);
+	cutilSafeCall(cudaGraphicsResourceGetMappedPointer((void **)&d_pboresult, &num_bytes_result,
+							   cuda_pboresult_resource));
+	connectivityDetection(d_temp, d_result, d_pboresult, width, height, scale, nthreads);
     // DEPRECATED: cutilSafeCall(cudaGLUnmapBufferObject(pbo));
     cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
+	cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pboresult_resource, 0));
 
     
     // Common display code path
@@ -107,9 +121,9 @@ void display()
         glClear(GL_COLOR_BUFFER_BIT);
 	
         // load texture from pbo
-        glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
-        glBindTexture(GL_TEXTURE_2D, texid);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pboresult);
+        glBindTexture(GL_TEXTURE_2D, texidresult);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width*scale, height*scale, GL_RGBA, GL_UNSIGNED_BYTE, 0);
         glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
 
         // fragment program is required to display floating point texture
@@ -130,11 +144,11 @@ void display()
         } else {
             glTexCoord2f(0.0f, 0.0f); 
             glVertex2f(0.0f, 0.0f);
-            glTexCoord2f((float)width, 0.0f); 
+            glTexCoord2f((float)width*scale, 0.0f); 
             glVertex2f(1.0f, 0.0f);
-            glTexCoord2f((float)width, (float)height); 
+            glTexCoord2f((float)width*scale, (float)height*scale); 
             glVertex2f(1.0f, 1.0f);
-            glTexCoord2f(0.0f, (float)height); glVertex2f(0.0f, 1.0f);
+            glTexCoord2f(0.0f, (float)height*scale); glVertex2f(0.0f, 1.0f);
         }
         glEnd();
         glBindTexture(GL_TEXTURE_TYPE, 0);
@@ -201,7 +215,7 @@ void initCuda()
     cutilSafeCall( cudaMalloc( (void**) &d_temp, (width * height * sizeof(unsigned int)) ));
 
     // Refer to pixel_kernel.cu for implementation
-    initTexture(width, height, h_img); 
+    initTexture(width, height, h_img, h_result); 
 
     cutilCheckError( cutCreateTimer( &timer));
 }
@@ -210,6 +224,7 @@ void cleanup()
 {
     cutilCheckError( cutDeleteTimer( timer));
     if(h_img)cutFree(h_img);
+	if(h_result) free(h_result);
     cutilSafeCall(cudaFree(d_img));
     cutilSafeCall(cudaFree(d_temp));
 
@@ -218,9 +233,12 @@ void cleanup()
 
     //DEPRECATED: cutilSafeCall(cudaGLUnregisterBufferObject(pbo));    
     cudaGraphicsUnregisterResource(cuda_pbo_resource);
+	cudaGraphicsUnregisterResource(cuda_pboresult_resource);
 
     glDeleteBuffersARB(1, &pbo);
+	glDeleteBuffersARB(1, &pboresult);
     glDeleteTextures(1, &texid);
+	glDeleteTextures(1, &texidresult);
     glDeleteProgramsARB(1, &shader);
 
  }
@@ -260,11 +278,26 @@ void initOpenGL()
     // DEPRECATED: cutilSafeCall(cudaGLRegisterBufferObject(pbo));
     cutilSafeCall(cudaGraphicsGLRegisterBuffer(&cuda_pbo_resource, pbo, 
 					       cudaGraphicsMapFlagsWriteDiscard));
+
+	glGenBuffersARB(1, &pboresult);
+	glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pboresult);
+	glBufferDataARB(GL_PIXEL_UNPACK_BUFFER_ARB, width*height*scale*scale*sizeof(GLubyte)*4, h_result, GL_STREAM_DRAW_ARB);
+	glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+	cutilSafeCall(cudaGraphicsGLRegisterBuffer(&cuda_pboresult_resource, pboresult,
+						   cudaGraphicsMapFlagsWriteDiscard));
     
     // create texture for display
     glGenTextures(1, &texid);
     glBindTexture(GL_TEXTURE_2D, texid);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+   	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+
+	glGenTextures(1, &texidresult);
+	glBindTexture(GL_TEXTURE_2D, texidresult);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width*scale, height*scale, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -321,12 +354,15 @@ void loadImageData(int argc, char **argv)
       //  shrLog("Error finding image file '%s'\n", image_filename);
         exit(EXIT_FAILURE);
     }
-
-    cutilCheckError(cutLoadPPM4ub(image_path, (unsigned char **) &h_img, &width, &height));
+	
+	cutilCheckError(cutLoadPPM4ub(image_path, (unsigned char **) &h_img, &width, &height));
     if (!h_img) {
       //  shrLog("Error opening file '%s'\n", image_path);
         exit(-1);
     }
+
+	h_result = (unsigned int*)calloc(0, width*height*scale*scale*sizeof(unsigned int));
+
     //shrLog("Loaded '%s', %d x %d pixels\n\n", image_path, width, height);
 }
 

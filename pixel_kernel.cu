@@ -23,7 +23,7 @@
 #define printf(f, ...) ((void) (f, __VA_ARGS__), 0)
 #endif
 
-texture<float, 2> tex;
+//texture<float, 2> tex;
 texture<uchar4, 2, cudaReadModeNormalizedFloat> rgbaTex;
 
 cudaArray* d_array, *d_tempArray;
@@ -417,10 +417,20 @@ d_eliminate_crosses( uint *id, uint *od, int w, int h )
 
 //TODO: Pass Three, Voronoi Graph Generation
 __global__ void
-d_voronoi_generation(uint *id, uint *od, int w, int h)
+d_voronoi_generation(uint *id, uint *od, uint *od2, int w, int h, int scale)
 {
 	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
-	od[center] = (id[center]&0xFFFFFF00)>>8;
+	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
+	//printf("center %d center2 %d largest elem \n", center, center2, od2[center2+(scale-1)*scale*w+scale-1]);
+	for ( int i = 0; i < scale; ++i )
+	{
+		for ( int j = 0; j < scale; ++j )
+		{
+	//		if (center2+i*w*scale+j>w*h*scale*scale-1)
+	//			printf("center %d center2 %d \n", center, center2);
+			od[center2+i*w*scale+j] = id[center]&0xFF;
+		}
+	}
 }
 
 //All three passes finished the reshaping of the original pixel art.
@@ -429,7 +439,7 @@ d_voronoi_generation(uint *id, uint *od, int w, int h)
 
 
 	extern "C" 
-void initTexture(int width, int height, void *pImage)
+void initTexture(int width, int height, void *pImage, void *pResult)
 {
 	int size = width * height * sizeof(unsigned int);
 
@@ -439,14 +449,6 @@ void initTexture(int width, int height, void *pImage)
 	cutilSafeCall( cudaMemcpyToArray( d_array, 0, 0, pImage, size, cudaMemcpyHostToDevice));
 	cutilSafeCall( cudaMallocArray  ( &d_tempArray,   &channelDesc, width, height )); 
 
-	// set texture parameters
-	tex.addressMode[0] = cudaAddressModeClamp;
-	tex.addressMode[1] = cudaAddressModeClamp;
-	tex.filterMode = cudaFilterModePoint;
-	tex.normalized = true;
-
-	// Bind the array to the texture
-	cutilSafeCall( cudaBindTextureToArray(tex, d_array, channelDesc) );
 }
 
 	extern "C"
@@ -457,7 +459,7 @@ void freeTextures()
 }
 
 	extern "C"
-double connectivityDetection(uint *d_temp, unsigned int *d_dest, int width, int height, int nthreads)
+double connectivityDetection(uint *d_temp, unsigned int *d_dest, unsigned int * d_dest2, int width, int height, int scale, int nthreads)
 {
 	cutilSafeCall( cudaBindTextureToArray(rgbaTex, d_array));
 
@@ -472,15 +474,11 @@ double connectivityDetection(uint *d_temp, unsigned int *d_dest, int width, int 
 	//ping-pong data while doing processing works
 	d_check_connect<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest, width, height);
 	d_eliminate_crosses<<<height*width/nthreads, nthreads, 0>>>(d_dest, d_temp, width, height);
-	d_voronoi_generation<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest, width, height);
+	d_voronoi_generation<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest2, d_dest, width, height, scale);
 
 	// sync host and stop computation timer
 	cutilSafeCall( cutilDeviceSynchronize() );
 	dKernelTime += shrDeltaT(0);
-
-	// copy result back from global memory to array
-	cutilSafeCall( cudaMemcpyToArray( d_tempArray, 0, 0, d_temp, width * height * sizeof(float), cudaMemcpyDeviceToDevice));
-	cutilSafeCall( cudaBindTextureToArray(rgbaTex, d_tempArray) );
 
 	return (dKernelTime);
 }
