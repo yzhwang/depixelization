@@ -54,11 +54,12 @@ int nthreads = 16;
 
 
 unsigned int width, height;
-unsigned int scale = 4;
+unsigned int scale = 8;
 unsigned int * h_img = NULL;
 unsigned int * h_result = NULL;
 unsigned int * d_img = NULL;
 unsigned int * d_temp = NULL;
+float2       * d_point = NULL;
 
 GLuint pbo;     // OpenGL pixel buffer object
 struct cudaGraphicsResource *cuda_pbo_resource; // handles OpenGL-CUDA exchange
@@ -90,7 +91,7 @@ extern "C" void loadImageData(int argc, char **argv);
 extern "C" void initTexture(int width, int height, void *pImage, void *pResult);
 extern "C" void freeTextures();
 
-extern "C" double connectivityDetection(uint *d_temp, unsigned int *d_dest, unsigned int *d_dest2, int width, int height, int scale, int nthreads);
+extern "C" double connectivityDetection(uint *d_temp, unsigned int *d_dest, unsigned int *d_dest2, float2 *d_point, int width, int height, int scale, int nthreads);
 
 
 // display results using OpenGL
@@ -110,7 +111,7 @@ void display()
 						       cuda_pbo_resource));
 	cutilSafeCall(cudaGraphicsResourceGetMappedPointer((void **)&d_pboresult, &num_bytes_result,
 							   cuda_pboresult_resource));
-	connectivityDetection(d_temp, d_result, d_pboresult, width, height, scale, nthreads);
+	connectivityDetection(d_temp, d_result, d_pboresult, d_point, width, height, scale, nthreads);
     // DEPRECATED: cutilSafeCall(cudaGLUnmapBufferObject(pbo));
     cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 	cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pboresult_resource, 0));
@@ -213,6 +214,7 @@ void initCuda()
     // allocate device memory
     cutilSafeCall( cudaMalloc( (void**) &d_img,  (width * height * sizeof(unsigned int)) ));
     cutilSafeCall( cudaMalloc( (void**) &d_temp, (width * height * sizeof(unsigned int)) ));
+	cutilSafeCall( cudaMalloc( (void**) &d_point, (width * height * sizeof(float2) * 6) ));
 
     // Refer to pixel_kernel.cu for implementation
     initTexture(width, height, h_img, h_result); 
