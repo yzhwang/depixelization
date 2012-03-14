@@ -29,12 +29,12 @@ texture<uchar4, 2, cudaReadModeNormalizedFloat> rgbaTex;
 cudaArray* d_array, *d_tempArray;
 
 __device__ __forceinline__ void setNodeValues(float2* pt,
-											  float x1, float y1,
-											  float x2, float y2,
-											  float x3, float y3,
-											  float x4, float y4,
-											  float x5, float y5,
-											  float x6, float y6)
+		float x1, float y1,
+		float x2, float y2,
+		float x3, float y3,
+		float x4, float y4,
+		float x5, float y5,
+		float x6, float y6)
 {
 	pt[0].x = x1;
 	pt[0].y = y1;
@@ -49,6 +49,51 @@ __device__ __forceinline__ void setNodeValues(float2* pt,
 	pt[5].x = x6;
 	pt[5].y = y6;
 
+}
+
+__device__ __forceinline__ float dotProduct(float2 a, float2 b)
+{
+	return a.x*b.x + a.y*b.y;
+}
+
+/*
+   code from http://alienryderflex.com/polygon/
+ */
+__device__ bool isPointInPolygon(int n_corners, float2 src, float2* corners)
+{
+	
+	int j = n_corners - 1;
+	bool odd_nodes = false;
+	for ( int i = 0; i < n_corners; ++i )
+	{
+		if ((corners[i].y < src.y && corners[j].y >= src.y
+					|| corners[j].y < src.y && corners[i].y >= src.y)
+				&& (corners[i].x <= src.x || corners[j].x <= src.x))
+		{
+			odd_nodes^=(corners[i].x+(src.y-corners[i].y)/(corners[j].y-corners[i].y)*(corners[j].x-corners[i].x)<src.x);
+		}
+		j = i;
+	}
+	return odd_nodes;
+	
+	/*bool inside = false;
+	float2 e0 = corners[n_corners-1];
+	float2 e1;
+	bool y0 = (e0.y >= src.y);
+	bool y1;
+	for ( int i = 0; i < n_corners; ++i)
+	{
+		e1 = corners[i];
+		y1 = (e1.y >= src.y);
+		if ( y0 != y1 )
+		{
+			if (((e1.y - src.y)*(e0.x - e1.x) >= (e1.x - src.x) * (e0.y - e1.y)) == y1)
+				inside == !inside;
+		}
+		y0 = y1;
+		e0 = e1;
+	}
+	return inside;*/
 }
 
 __device__ __forceinline__ uint bitCount(uint v)
@@ -71,6 +116,22 @@ __device__ __forceinline__ uint rgbToyuv(float4 rgba)
 	yuv.y = __saturatef(yuv.y);
 	yuv.z = __saturatef(yuv.z);
 	return (uint(255)<<24) | (uint(yuv.z*255.0f) << 16) | (uint(yuv.y*255.0f) << 8) | uint(yuv.x*255.0f);
+}
+
+__device__ __forceinline__ uint yuvTorgba(uint yuvi)
+{
+	float4 yuv;
+	yuv.x = (float)(yuvi&0xFF) * 0.003921568627f;
+	yuv.y = (float)((yuvi>>8)&0xFF) * 0.003921568627f;
+	yuv.z = (float)((yuvi>>16)&0xFF) * 0.003921568627f;
+	float4 rgb;
+	rgb.x = yuv.x + (yuv.y-0.5f) * 1.403f;
+	rgb.y = yuv.x - 0.714f * yuv.y - 0.344f * yuv.z + 0.529f;
+	rgb.z = yuv.x + (yuv.z-0.5f) * 1.773f;
+	rgb.x = __saturatef(rgb.x);
+	rgb.y = __saturatef(rgb.y);
+	rgb.z = __saturatef(rgb.z);
+	return (uint(255.0f) << 24) | (uint(rgb.z * 255.0f) << 16) | (uint(rgb.y * 255.0f) << 8) | uint(rgb.x * 255.0f);
 }
 
 // If two node's YUV difference is larger than either 48 for Y, 7 for U or 6 for V.
@@ -439,8 +500,8 @@ d_eliminate_crosses( uint *id, uint *od, int w, int h )
 }
 
 //TODO: Pass Three, Voronoi Graph Generation
-__global__ void
-d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scale)
+	__global__ void
+d_voronoi_generation_r0c0(uint *id, float2 *pt, int w, int h, int scale)
 {
 	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
 	int row = center/w;
@@ -454,10 +515,11 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 		setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 		setNodeValues(&pt[(center+w+1)*6], 0, 0, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 		setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
-		
-		if ((row%2==0) && (column%3==0))
+
+		if (((row%2)==0) && ((column%3)==0))
 		{
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==32))
+			//printf("row %d column %d center %u center+1 %u\n", row, column, (id[center]&0x3F), (id[center+1]&0x3F));
+			if (((id[center]&0x23)==0) && ((id[center+1]&0x39)==32))
 			{
 				//case 1
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -465,21 +527,22 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x19)==0))
 			{
 				// case 2
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 1, 0, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x39)==32))
 			{
 				// case 3
+				//printf("center %d\n", center);
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x30)==0))
 			{
 				// case 4
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -487,7 +550,7 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x39)==32))
 			{
 				// case 5
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -495,30 +558,31 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-		}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==0))
+			}
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x18)==0))
 			{
 				// case 6
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==41) && (((id[center+1]&0x39))==32))
 			{
 				//case 7
+				//printf("center %d\n", center);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==8))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x08)==8))
 			{
 				// case 8
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x20)==0) && ((id[center+1]&0x3F)==16))
 			{
 				// case 9
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0, 1, -1, -1);
@@ -526,7 +590,7 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==16))
 			{
 				// case 10
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -535,14 +599,14 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x22)==0) && ((id[center+1]&0x3F)==19))
 			{
 				// case 11
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.75, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==19))
 			{
 				// case 12
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -550,14 +614,14 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==2) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x02)==2) && ((id[center+1]&0x3F)==28))
 			{
 				// case 13
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==16))
 			{
 				// case 14
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -567,18 +631,19 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x3F)==28))
 			{
+				//printf("center %d\n", center);
 				// case 15
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -0.25, 0.75);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-				
-				
+
+
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==16))
 			{
 				// case 16
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0.25, 1.25, 0, 1);
@@ -588,7 +653,7 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==19))
 			{
 				// case 17
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -598,7 +663,7 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0, 0, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==19))
 			{
 				// case 18
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0.75, 1.25, 0, 1);
@@ -610,18 +675,10 @@ d_voronoi_generation_r0c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 		}
 
 	}
-	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
-	for ( int i = 0; i < scale; ++i )
-	{
-		for ( int j = 0; j < scale; ++j )
-		{
-			od[center2+i*w*scale+j] = id[center]&0xFF;
-		}
-	}
 }
 
-__global__ void
-d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scale)
+	__global__ void
+d_voronoi_generation_r0c1(uint *id, float2 *pt, int w, int h, int scale)
 {
 	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
 	int row = center/w;
@@ -631,7 +688,7 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 
 		if ((row%2==0) && (column%3==1))
 		{
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x23)==0) && ((id[center+1]&0x39)==32))
 			{
 				//case 1
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -639,21 +696,22 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x19)==0))
 			{
 				// case 2
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 1, 0, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x39)==32))
 			{
 				// case 3
+				//printf("center %d\n", center);
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x30)==0))
 			{
 				// case 4
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -661,7 +719,7 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x39)==32))
 			{
 				// case 5
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -669,15 +727,15 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-		}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==0))
+			}
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x18)==0))
 			{
 				// case 6
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x39)==32))
 			{
 				//case 7
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 1.25, 0, 1, -1, -1);
@@ -685,14 +743,14 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==8))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x08)==8))
 			{
 				// case 8
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x20)==0) && ((id[center+1]&0x3F)==16))
 			{
 				// case 9
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0, 1, -1, -1);
@@ -700,7 +758,7 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==16))
 			{
 				// case 10
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -709,14 +767,14 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x22)==0) && ((id[center+1]&0x3F)==19))
 			{
 				// case 11
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.75, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==19))
 			{
 				// case 12
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -724,14 +782,14 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==2) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x02)==2) && ((id[center+1]&0x3F)==28))
 			{
 				// case 13
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==16))
 			{
 				// case 14
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -741,7 +799,7 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x3F)==28))
 			{
 				// case 15
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -749,10 +807,10 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-				
-				
+
+
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==16))
 			{
 				// case 16
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0.25, 1.25, 0, 1);
@@ -762,7 +820,7 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==19))
 			{
 				// case 17
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -772,7 +830,7 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0, 0, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==19))
 			{
 				// case 18
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0.75, 1.25, 0, 1);
@@ -784,17 +842,9 @@ d_voronoi_generation_r0c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 		}
 
 	}
-	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
-	for ( int i = 0; i < scale; ++i )
-	{
-		for ( int j = 0; j < scale; ++j )
-		{
-			od[center2+i*w*scale+j] = id[center]&0xFF;
-		}
-	}
 }
-__global__ void
-d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scale)
+	__global__ void
+d_voronoi_generation_r0c2(uint *id, float2 *pt, int w, int h, int scale)
 {
 	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
 	int row = center/w;
@@ -804,7 +854,7 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 
 		if ((row%2==0) && (column%3==2))
 		{
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x23)==0) && ((id[center+1]&0x39)==32))
 			{
 				//case 1
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -812,21 +862,22 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x19)==0))
 			{
 				// case 2
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 1, 0, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x39)==32))
 			{
 				// case 3
+				//printf("center %d\n", center);
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x30)==0))
 			{
 				// case 4
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -834,7 +885,7 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x39)==32))
 			{
 				// case 5
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -842,15 +893,15 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-		}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==0))
+			}
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x18)==0))
 			{
 				// case 6
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x39)==32))
 			{
 				//case 7
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 1.25, 0, 1, -1, -1);
@@ -858,14 +909,14 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==8))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x08)==8))
 			{
 				// case 8
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x20)==0) && ((id[center+1]&0x3F)==16))
 			{
 				// case 9
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0, 1, -1, -1);
@@ -873,7 +924,7 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==16))
 			{
 				// case 10
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -882,14 +933,14 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x22)==0) && ((id[center+1]&0x3F)==19))
 			{
 				// case 11
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.75, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==19))
 			{
 				// case 12
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -897,14 +948,14 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==2) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x02)==2) && ((id[center+1]&0x3F)==28))
 			{
 				// case 13
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==16))
 			{
 				// case 14
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -914,7 +965,7 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x3F)==28))
 			{
 				// case 15
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -922,10 +973,10 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-				
-				
+
+
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==16))
 			{
 				// case 16
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0.25, 1.25, 0, 1);
@@ -935,7 +986,7 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==19))
 			{
 				// case 17
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -945,7 +996,7 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0, 0, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==19))
 			{
 				// case 18
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0.75, 1.25, 0, 1);
@@ -957,18 +1008,10 @@ d_voronoi_generation_r0c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 		}
 
 	}
-	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
-	for ( int i = 0; i < scale; ++i )
-	{
-		for ( int j = 0; j < scale; ++j )
-		{
-			od[center2+i*w*scale+j] = id[center]&0xFF;
-		}
-	}
 }
 
-__global__ void
-d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scale)
+	__global__ void
+d_voronoi_generation_r1c0(uint *id, float2 *pt, int w, int h, int scale)
 {
 	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
 	int row = center/w;
@@ -977,7 +1020,7 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 	{	
 		if ((row%2==1) && (column%3==0))
 		{
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x23)==0) && ((id[center+1]&0x39)==32))
 			{
 				//case 1
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -985,21 +1028,22 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x19)==0))
 			{
 				// case 2
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 1, 0, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x39)==32))
 			{
 				// case 3
+				//printf("center %d\n", center);
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x30)==0))
 			{
 				// case 4
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1007,7 +1051,7 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x39)==32))
 			{
 				// case 5
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1015,15 +1059,15 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-		}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==0))
+			}
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x18)==0))
 			{
 				// case 6
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x39)==32))
 			{
 				//case 7
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 1.25, 0, 1, -1, -1);
@@ -1031,14 +1075,14 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==8))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x08)==8))
 			{
 				// case 8
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x20)==0) && ((id[center+1]&0x3F)==16))
 			{
 				// case 9
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0, 1, -1, -1);
@@ -1046,7 +1090,7 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==16))
 			{
 				// case 10
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -1055,14 +1099,14 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x22)==0) && ((id[center+1]&0x3F)==19))
 			{
 				// case 11
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.75, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==19))
 			{
 				// case 12
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -1070,14 +1114,14 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==2) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x02)==2) && ((id[center+1]&0x3F)==28))
 			{
 				// case 13
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==16))
 			{
 				// case 14
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1087,7 +1131,7 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x3F)==28))
 			{
 				// case 15
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1095,10 +1139,10 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-				
-				
+
+
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==16))
 			{
 				// case 16
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0.25, 1.25, 0, 1);
@@ -1108,7 +1152,7 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==19))
 			{
 				// case 17
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1118,7 +1162,7 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0, 0, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==19))
 			{
 				// case 18
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0.75, 1.25, 0, 1);
@@ -1130,18 +1174,10 @@ d_voronoi_generation_r1c0(uint *id, uint *od, float2 *pt, int w, int h, int scal
 		}
 
 	}
-	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
-	for ( int i = 0; i < scale; ++i )
-	{
-		for ( int j = 0; j < scale; ++j )
-		{
-			od[center2+i*w*scale+j] = id[center]&0xFF;
-		}
-	}
 }
 
-__global__ void
-d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scale)
+	__global__ void
+d_voronoi_generation_r1c1(uint *id, float2 *pt, int w, int h, int scale)
 {
 	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
 	int row = center/w;
@@ -1151,7 +1187,7 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 
 		if ((row%2==1) && (column%3==1))
 		{
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x23)==0) && ((id[center+1]&0x39)==32))
 			{
 				//case 1
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1159,21 +1195,22 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x19)==0))
 			{
 				// case 2
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 1, 0, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x39)==32))
 			{
 				// case 3
+				//printf("center %d\n", center);
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x30)==0))
 			{
 				// case 4
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1181,7 +1218,7 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x39)==32))
 			{
 				// case 5
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1189,15 +1226,15 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-		}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==0))
+			}
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x18)==0))
 			{
 				// case 6
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x39)==32))
 			{
 				//case 7
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 1.25, 0, 1, -1, -1);
@@ -1205,14 +1242,14 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==8))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x08)==8))
 			{
 				// case 8
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x20)==0) && ((id[center+1]&0x3F)==16))
 			{
 				// case 9
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0, 1, -1, -1);
@@ -1220,7 +1257,7 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==16))
 			{
 				// case 10
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -1229,14 +1266,14 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x22)==0) && ((id[center+1]&0x3F)==19))
 			{
 				// case 11
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.75, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==19))
 			{
 				// case 12
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -1244,14 +1281,14 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==2) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x02)==2) && ((id[center+1]&0x3F)==28))
 			{
 				// case 13
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==16))
 			{
 				// case 14
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1261,7 +1298,7 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x3F)==28))
 			{
 				// case 15
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1269,10 +1306,10 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-				
-				
+
+
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==16))
 			{
 				// case 16
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0.25, 1.25, 0, 1);
@@ -1282,7 +1319,7 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==19))
 			{
 				// case 17
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1292,7 +1329,7 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0, 0, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==19))
 			{
 				// case 18
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0.75, 1.25, 0, 1);
@@ -1304,17 +1341,9 @@ d_voronoi_generation_r1c1(uint *id, uint *od, float2 *pt, int w, int h, int scal
 		}
 
 	}
-	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
-	for ( int i = 0; i < scale; ++i )
-	{
-		for ( int j = 0; j < scale; ++j )
-		{
-			od[center2+i*w*scale+j] = id[center]&0xFF;
-		}
-	}
 }
-__global__ void
-d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scale)
+	__global__ void
+d_voronoi_generation_r1c2(uint *id, float2 *pt, int w, int h, int scale)
 {
 	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
 	int row = center/w;
@@ -1324,7 +1353,7 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 
 		if ((row%2==1) && (column%3==2))
 		{
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x23)==0) && ((id[center+1]&0x39)==32))
 			{
 				//case 1
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1332,21 +1361,22 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x19)==0))
 			{
 				// case 2
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 1, 0, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x33)==16) && ((id[center+1]&0x39)==32))
 			{
 				// case 3
+				//printf("center %d\n", center);
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==0))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x30)==0))
 			{
 				// case 4
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1354,7 +1384,7 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x39)==32))
 			{
 				// case 5
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1362,15 +1392,15 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-		}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==0))
+			}
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x18)==0))
 			{
 				// case 6
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 1, 0, 1, 1, 0, 1, -1, -1, -1, -1);
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==32))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x39)==32))
 			{
 				//case 7
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 0.75, 0.75, 0.25, 1.25, 0, 1, -1, -1);
@@ -1378,14 +1408,14 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w)*6], 0, 0, 1, 0, 1.25, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==8))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x08)==8))
 			{
 				// case 8
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.75, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x20)==0) && ((id[center+1]&0x3F)==16))
 			{
 				// case 9
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0, 1, -1, -1);
@@ -1393,7 +1423,7 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==16))
 			{
 				// case 10
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -1402,14 +1432,14 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==0) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x22)==0) && ((id[center+1]&0x3F)==19))
 			{
 				// case 11
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.75, 1.25, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==16) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x13)==16) && ((id[center+1]&0x3F)==19))
 			{
 				// case 12
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
@@ -1417,14 +1447,14 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0, 0, 0.25, -0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 1, 0, 1, 1, 0, 1, -0.25, 0.25, -1, -1);
 			}
-			if ((id[center]&0x3F==2) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x02)==2) && ((id[center+1]&0x3F)==28))
 			{
 				// case 13
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==16))
 			{
 				// case 14
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1434,7 +1464,7 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+1)*6], 0.25, 0.25, 0.75, 0.25, 1, 1, 0, 1, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 			}
-			if ((id[center]&0x3F==38) && (id[center+1]&0x3F==28))
+			if (((id[center]&0x3F)==38) && ((id[center+1]&0x3F)==28))
 			{
 				// case 15
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1442,10 +1472,10 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+2)*6], 0, 0, 1, 0, 1, 1, 0.25, 0.75, -1, -1, -1, -1);
 				setNodeValues(&pt[(center+w)*6], 0, 0, 0.75, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 				setNodeValues(&pt[(center+w+2)*6], 0, 0, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
-				
-				
+
+
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==16))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==16))
 			{
 				// case 16
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1.25, 0.75, 0.75, 1.25, 0.25, 1.25, 0, 1);
@@ -1455,7 +1485,7 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0.25, -0.25, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==32) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==32) && ((id[center+1]&0x3F)==19))
 			{
 				// case 17
 				setNodeValues(&pt[center*6], 0, 0, 1, 0, 0.75, 0.75, 0, 1, -1, -1, -1, -1);
@@ -1465,7 +1495,7 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 				setNodeValues(&pt[(center+w+2)*6], -0.25, 0.25, 0, 0, 1, 0, 1, 1, 0, 1, -1, -1);
 
 			}
-			if ((id[center]&0x3F==41) && (id[center+1]&0x3F==19))
+			if (((id[center]&0x3F)==41) && ((id[center+1]&0x3F)==19))
 			{
 				// case 18
 				setNodeValues(&pt[(center+1)*6], 0, 0, 1, 0, 1, 1, 0.25, 1.25, 0.75, 1.25, 0, 1);
@@ -1477,20 +1507,76 @@ d_voronoi_generation_r1c2(uint *id, uint *od, float2 *pt, int w, int h, int scal
 		}
 
 	}
-	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
-	for ( int i = 0; i < scale; ++i )
-	{
-		for ( int j = 0; j < scale; ++j )
-		{
-			od[center2+i*w*scale+j] = id[center]&0xFF;
-		}
-	}
+
 }
 
 //All three passes finished the reshaping of the original pixel art.
 
 //TODO: Pass Four, Curve Extraction
 
+// Final Pass, Render to pbo
+
+	__global__ void
+d_render_to_pbo(uint *id, float2 *pt, uint *od, int w, int h, int scale)
+{
+	unsigned int center = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
+	int row = center/w;
+	int column = center%w;
+	int center2 = (center/w)*scale*scale*w+(center%w)*scale;
+	int n_corners = 0;
+	int target = 0;
+	//if (row>0 && row<w-1 && column>0 && column<h-1)
+	{
+	
+		for ( int i = 0; i < scale; ++i )
+		{
+			for ( int j = 0; j < scale; ++j )
+			{
+				target = 0;
+				bool flag = false;
+				for ( int k = -1; k < 2; ++k )
+				{
+					for ( int p = -1; p < 2; ++p )
+					{
+						if (row + k < 0 || row + k > h -1 || column + p < 0 || column + p > w - 1)
+							continue;
+						int index = center + k*w + p;
+						n_corners = 0;
+						while (pt[index*6+n_corners].x > -0.5 && n_corners < 6)
+							++n_corners;
+						float2 src;
+						src.x = (((float)j+0.5f)/(float)scale)-(float)p;
+						src.y = (((float)i+0.5f)/(float)scale)-(float)k;
+						//if (center == 0)
+						//printf("index %d i %d j %d: srcx %f srcy %f n_corners %d\n", index, i, j, src.x, src.y, n_corners);
+						if (isPointInPolygon(n_corners, src, &pt[index*6]))
+						{
+							//if (center == 0 && index == 8)
+							//	printf("center %d, srcx %f, srcy %f, n_corners, %d index %d\n", center, src.x, src.y, n_corners, index);
+							target = index;
+							flag = true;
+							break;
+							//od[center2+i*w*scale+j] = id[index]>>8;
+						}
+						//if (n_corners != 4)
+						//printf("row %d column %d id %d\n", row, column, n_corners);
+					}
+					if (flag)
+						break;
+				}
+				od[center2+i*w*scale+j] = yuvTorgba(id[target]>>8);
+				//if ((i%2)^(j%2))
+				//	od[center2+i*w*scale+j] = 255;
+				//else
+				//	od[center2+i*w*scale+j] = 0;
+			}
+		}
+	}
+	//int fu = 48;
+	//printf("%f %f %f %f %f %f %f %f %f %f %f %f\n", pt[fu+0].x, pt[fu+0].y, pt[fu+1].x, pt[fu+1].y,
+	//									      pt[fu+2].x, pt[fu+2].y, pt[fu+3].x, pt[fu+3].y,
+	//										  pt[fu+4].x, pt[fu+4].y, pt[fu+5].x, pt[fu+5].y);
+}
 
 	extern "C" 
 void initTexture(int width, int height, void *pImage, void *pResult)
@@ -1529,13 +1615,16 @@ double connectivityDetection(uint *d_temp, unsigned int *d_dest, unsigned int * 
 	d_check_connect<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest, width, height);
 	d_eliminate_crosses<<<height*width/nthreads, nthreads, 0>>>(d_dest, d_temp, width, height);
 
-	d_voronoi_generation_r0c0<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest2, d_point, width, height, scale);
-	d_voronoi_generation_r0c1<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest2, d_point, width, height, scale);
-	d_voronoi_generation_r0c2<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest2, d_point, width, height, scale);
-	d_voronoi_generation_r1c0<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest2, d_point, width, height, scale);
-	d_voronoi_generation_r1c1<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest2, d_point, width, height, scale);
-	d_voronoi_generation_r1c2<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_dest2, d_point, width, height, scale);
+	//voronoi generation
+	d_voronoi_generation_r0c0<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_point, width, height, scale);
+	d_voronoi_generation_r0c1<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_point, width, height, scale);
+	d_voronoi_generation_r0c2<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_point, width, height, scale);
+	d_voronoi_generation_r1c0<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_point, width, height, scale);
+	d_voronoi_generation_r1c1<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_point, width, height, scale);
+	d_voronoi_generation_r1c2<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_point, width, height, scale);
 
+	//render to a larger pbo
+	d_render_to_pbo<<<height*width/nthreads, nthreads, 0>>>(d_temp, d_point, d_dest2, width, height, scale);
 	// sync host and stop computation timer
 	cutilSafeCall( cutilDeviceSynchronize() );
 	dKernelTime += shrDeltaT(0);

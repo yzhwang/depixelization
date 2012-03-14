@@ -54,7 +54,7 @@ int nthreads = 16;
 
 
 unsigned int width, height;
-unsigned int scale = 8;
+unsigned int scale = 16;
 unsigned int * h_img = NULL;
 unsigned int * h_result = NULL;
 unsigned int * d_img = NULL;
