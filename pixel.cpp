@@ -9,21 +9,6 @@
  *
  */
  
-/*
-    Image box filtering example
-
-    This sample uses CUDA to perform a simple box filter on an image
-    and uses OpenGL to display the results.
-
-    It processes rows and columns of the image in parallel.
-
-    The box filter is implemented such that it has a constant cost,
-    regardless of the filter width.
-
-    Press '=' to increment the filter radius, '-' to decrease it
-
-    Version 1.1 - modified to process 8-bit RGBA images
-*/
 
 // OpenGL Graphics includes
 #include <GL/glew.h>
@@ -102,6 +87,7 @@ void display()
     // execute filter, writing results to pbo
     unsigned int *d_result;
 	unsigned int *d_pboresult;
+	double elapsed_time;
     //DEPRECATED: cutilSafeCall( cudaGLMapBufferObject((void**)&d_result, pbo) );
     cutilSafeCall(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
 	cutilSafeCall(cudaGraphicsMapResources(1, &cuda_pboresult_resource, 0));
@@ -111,7 +97,8 @@ void display()
 						       cuda_pbo_resource));
 	cutilSafeCall(cudaGraphicsResourceGetMappedPointer((void **)&d_pboresult, &num_bytes_result,
 							   cuda_pboresult_resource));
-	connectivityDetection(d_temp, d_result, d_pboresult, d_point, width, height, scale, nthreads);
+	elapsed_time = connectivityDetection(d_temp, d_result, d_pboresult, d_point, width, height, scale, nthreads);
+	printf("%f\n", elapsed_time);
     // DEPRECATED: cutilSafeCall(cudaGLUnmapBufferObject(pbo));
     cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 	cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pboresult_resource, 0));
@@ -214,7 +201,7 @@ void initCuda()
     // allocate device memory
     cutilSafeCall( cudaMalloc( (void**) &d_img,  (width * height * sizeof(unsigned int)) ));
     cutilSafeCall( cudaMalloc( (void**) &d_temp, (width * height * sizeof(unsigned int)) ));
-	cutilSafeCall( cudaMalloc( (void**) &d_point, (width * height * sizeof(float2) * 6) ));
+	cutilSafeCall( cudaMalloc( (void**) &d_point, (width * height * sizeof(float2) * 8) ));
 
     // Refer to pixel_kernel.cu for implementation
     initTexture(width, height, h_img, h_result); 
