@@ -32,9 +32,9 @@
 
 
 const char *image_filename = "lenaRGB.ppm";
-const char *vector_filename = "lenaRGB1.ppm";
-int iterations = 0;
-int filter_radius = 2;
+//const char *vector_filename = "lenaRGB1.ppm";
+//int iterations = 0;
+//int filter_radius = 2;
 int nthreads = 16;
 
 
@@ -98,7 +98,7 @@ void display()
 	cutilSafeCall(cudaGraphicsResourceGetMappedPointer((void **)&d_pboresult, &num_bytes_result,
 							   cuda_pboresult_resource));
 	elapsed_time = connectivityDetection(d_temp, d_result, d_pboresult, d_point, width, height, scale, nthreads);
-	printf("%f\n", elapsed_time);
+	//printf("%f\n", elapsed_time);
     // DEPRECATED: cutilSafeCall(cudaGLUnmapBufferObject(pbo));
     cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 	cutilSafeCall(cudaGraphicsUnmapResources(1, &cuda_pboresult_resource, 0));
@@ -150,6 +150,7 @@ void display()
 
 }
 
+
 void keyboard(unsigned char key, int /*x*/, int /*y*/)
 {
 	switch(key) {
@@ -158,20 +159,9 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/)
 		break;
 		case '=':
 		case '+':
-		if (filter_radius < (int)width-1 &&
-			filter_radius < (int)height-1)
-		{
-			filter_radius++;
-		}
-		break;
 		case '-':
-		if (filter_radius > 1) filter_radius--;
-		break;
 		case ']':
-		iterations++;
 		case '[':
-		if (iterations>1) iterations--;
-		break;
 		default:
 		break;
 	}
@@ -383,7 +373,6 @@ int findCapableDevice(int argc, char **argv)
     cudaError_t error_id = cudaGetDeviceCount(&deviceCount);
     if (error_id != cudaSuccess) {
         fprintf(stderr, "cudaGetDeviceCount returned %d\n-> %s\n", (int)error_id, cudaGetErrorString(error_id) );
-      //  shrQAFinishExit(argc, (const char **)argv, QA_FAILED);
     }
 
     if(deviceCount==0)
