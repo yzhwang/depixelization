@@ -34,7 +34,7 @@
 ################################################################################
 
 # Add source files here
-EXECUTABLE	:= pixel
+EXECUTABLE	:= depixel
 # Cuda source files (compiled with cudacc)
 CUFILES		:= pixel_kernel.cu
 # C/C++ source files (compiled with gcc / c++)

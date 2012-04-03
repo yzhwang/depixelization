@@ -1,1 +1,10 @@
 Depixelization of Pixel Art on GPU
+
+-On Compilation
+First make sure to install CUDA 4.0 and NVIDIA GPU Computing SDK. Then just put the whole project directory under .../NVIDIA_GPU_Computing_SDK/C/src
+After that you can use make to build the project.
+
+-On Running the project
+There is a sample run.sh, you can either use "sh run.sh" to run the default sample (you need mario.ppm. it can be downloaded at: www.idav.ucdavis.edu/~yzhwang/images/mario.ppm), or run it yourself using "depixel [filename.ppm]"
+Note that the project now only take one parameter as the ppm file name. Also it only supports depixelization of pixel art in ppm file format.
+

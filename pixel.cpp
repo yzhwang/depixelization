@@ -328,7 +328,15 @@ void loadImageData(int argc, char **argv)
 {
     // load image (needed so we can get the width and height before we create the window
     char* image_path = NULL;
-    if (argc >= 1) image_path = shrFindFilePath(image_filename, argv[0]);
+    if (argc == 1 || argc > 2)
+	{
+		printf("Usage: depixel [filename]\n");
+		exit(EXIT_FAILURE);
+	}
+	else
+	{
+		image_path = shrFindFilePath(argv[1], NULL);
+	}
     if (image_path == 0) {
       //  shrLog("Error finding image file '%s'\n", image_filename);
         exit(EXIT_FAILURE);

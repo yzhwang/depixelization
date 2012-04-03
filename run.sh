@@ -1,1 +1,1 @@
-../../bin/linux/release/pixel
+../../bin/linux/release/depixel mario.ppm
